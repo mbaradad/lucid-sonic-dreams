@@ -25,6 +25,9 @@ from .sample_effects import *
 if not os.path.exists('stylegan2'):
   pygit2.clone_repository('https://github.com/NVlabs/stylegan2-ada.git',
                           'stylegan2')
+if not os.path.exists('stylegan2-ada-pytorch'):
+  pygit2.clone_repository('https://github.com/NVlabs/stylegan2-ada-pytorch.git',
+                          'stylegan2-ada-pytorch')
 
 #StyleGAN2 Imports
 cwd = os.getcwd()
@@ -33,6 +36,10 @@ import dnnlib
 from dnnlib.tflib.tfutil import * 
 os.chdir(cwd)
 
+import torch
+os.chdir('stylegan2-ada-pytorch')
+import legacy
+os.chdir(cwd)
 
 def show_styles():
   '''Show names of available (non-custom) styles'''
@@ -51,8 +58,9 @@ class LucidSonicDream:
                contrast_audio: str = None,
                flash_audio: str = None,
                style: str = 'wikiart',
+               model_type: str = 'tensorflow',
                input_shape: int = None,
-               num_possible_classes: int = None): 
+               num_possible_classes: int = None):
 
     # If style is a function, raise exception if function does not take 
     # noise_batch or class_batch parameters
@@ -70,6 +78,8 @@ class LucidSonicDream:
         sys.exit('input_shape and num_possible_classes '\
                  'must be provided if style is a function')
 
+    assert model_type in ['tensorflow', 'pytorch'], "Model type has to be tensorflow or pytorch"
+
     # Define attributes
     self.song = song
     self.pulse_audio = pulse_audio
@@ -78,12 +88,13 @@ class LucidSonicDream:
     self.contrast_audio = contrast_audio
     self.flash_audio = flash_audio
     self.style = style
+    self.model_type = model_type
     self.input_shape = input_shape or 512
     self.num_possible_classes = num_possible_classes 
     self.style_exists = False
     
 
-  def stylegan_init(self):
+  def stylegan_init_tf(self):
     '''Initialize StyleGAN(2) weights'''
 
     style = self.style
@@ -134,6 +145,18 @@ class LucidSonicDream:
                                   .static_kwargs.label_size
     except:
       self.num_possible_classes = 0
+
+  def stylegan_init_pytorch(self):
+    network_pkl = self.style
+
+    print('Loading networks from "%s"...' % network_pkl)
+    gpu = 0
+    device = torch.device('cuda:' + str(gpu))
+    with dnnlib.util.open_url(network_pkl) as f:
+        self.Gs = legacy.load_network_pkl(f)['G_ema'].to(device) # type: ignore
+
+    # for now only implemented for unconditional
+    self.num_possible_classes = 0
 
 
   def load_specs(self):
@@ -518,7 +541,7 @@ class LucidSonicDream:
                                    class_batch=class_batch)
           
         # Otherwise, generate frames with StyleGAN(2)
-        else:
+        elif self.model_type == 'tensorflow':
 
           w_batch = self.Gs.components\
                     .mapping.run(noise_batch,
@@ -526,6 +549,9 @@ class LucidSonicDream:
 
           image_batch = self.Gs.components\
                         .synthesis.run(w_batch, **Gs_syn_kwargs)
+        else:
+          all_w = self.Gs.mapping(torch.from_numpy(noise_batch).to('cuda:0'), None)
+          all_images = self.Gs.synthesis(all_w, noise_mode='const')
 
         # For each image in generated batch: apply effects, resize, and save
         for j, image in enumerate(image_batch):   
@@ -633,7 +659,10 @@ class LucidSonicDream:
       print('Preparing style...')
 
       if not callable(self.style):
-        self.stylegan_init()
+        if self.model_type == 'tensorflow':
+          self.stylegan_init_tf()
+        else:
+          self.stylegan_init_pytorch()
 
       self.style_exists = True
 
@@ -743,3 +772,26 @@ class EffectsGenerator:
 
     amplitude = self.spec[index]
     return self.func(array=array, strength = self.strength, amplitude=amplitude)
+
+if __name__ == '__main__':
+  import argparse
+
+  parser = argparse.ArgumentParser('')
+
+  parser.add_argument('--model-type', type=str, default='pytorch', choices=['pytorch', 'tensorflow'], help='what model type to use')
+
+  shaders21k_checkpoint = '/data/vision/torralba/movies_sfm/home/no_training_cnn/contrastive_image_models/image_generation/' \
+                          'stylegan2/shaders-21k-best-gamma/00000-shaders21k_256x256-auto4-gamma5-bgcfnc/network-snapshot-025000.pkl'
+
+  parser.add_argument('--style', type=str, default='checkpoint', help='style to use or checkpoint')
+
+  parser.add_argument('--music-file', type='str', default='./image_generation/explore_shader21k_styelgan/audio_sync/polo_and_pan_feel_good.mp3')
+  parser.add_argument('--output-file', type='str', default='./image_generation/explore_shader21k_styelgan/audio_sync/lucid_sonic_dreams_polo_and_pan_feel_good.mp4')
+
+  args = parser.parse_args()
+
+
+
+  L = LucidSonicDream(song=args.music_file,
+                      style=args.style,
+                      model_type=args.model_type)

@@ -1,5 +1,11 @@
 import sys
 import os
+
+assert os.getcwd().endswith('dreams')
+sys.path.append('.')
+sys.path.append(os.getcwd() + '/stylegan2')
+sys.path.append(os.getcwd() + '/stylegan2-ada-pytorch')
+
 import shutil
 import pickle 
 from tqdm import tqdm
@@ -8,7 +14,7 @@ import numpy as np
 import random
 from scipy.stats import truncnorm
 
-import tensorflow as tf
+#import tensorflow as tf
 import PIL
 from PIL import Image
 import skimage.exposure
@@ -18,28 +24,30 @@ import moviepy.editor as mpy
 from moviepy.audio.AudioClip import AudioArrayClip
 import pygit2
 
-from .helper_functions import * 
-from .sample_effects import *
+from helper_functions import *
+from sample_effects import *
 
 # Clone Official StyleGAN2-ADA Repository
-if not os.path.exists('stylegan2'):
+'''
+if not os.path.exists('repos/stylegan2'):
   pygit2.clone_repository('https://github.com/NVlabs/stylegan2-ada.git',
-                          'stylegan2')
-if not os.path.exists('stylegan2-ada-pytorch'):
+                          'repos/stylegan2')
+if not os.path.exists('repos/stylegan2-ada-pytorch'):
   pygit2.clone_repository('https://github.com/NVlabs/stylegan2-ada-pytorch.git',
-                          'stylegan2-ada-pytorch')
+                          'repos/stylegan2-ada-pytorch')
+'''
 
 #StyleGAN2 Imports
+''' 
 cwd = os.getcwd()
-os.chdir('stylegan2')
+os.chdir('repos/stylegan2/stylegan2')
 import dnnlib
-from dnnlib.tflib.tfutil import * 
+from dnnlib.tflib.tfutil import *
 os.chdir(cwd)
-
+'''
+import dnnlib
 import torch
-os.chdir('stylegan2-ada-pytorch')
 import legacy
-os.chdir(cwd)
 
 def show_styles():
   '''Show names of available (non-custom) styles'''
@@ -152,6 +160,7 @@ class LucidSonicDream:
     print('Loading networks from "%s"...' % network_pkl)
     gpu = 0
     device = torch.device('cuda:' + str(gpu))
+
     with dnnlib.util.open_url(network_pkl) as f:
         self.Gs = legacy.load_network_pkl(f)['G_ema'].to(device) # type: ignore
 
@@ -401,7 +410,7 @@ class LucidSonicDream:
 
     
 
-    for i in range(len(self.spec_norm_class)):
+    for i in tqdm(range(len(self.spec_norm_class))):
 
       # UPDATE NOISE # 
 
@@ -517,7 +526,11 @@ class LucidSonicDream:
     resolution = self.resolution
     batch_size = self.batch_size
     num_frame_batches = int(len(self.noise)/batch_size)
-    Gs_syn_kwargs = {'output_transform': {'func': convert_images_to_uint8, 
+    def convert_images_to_uint8(img):
+      normalized = (img - img.min()) / (img.max() - img.min())
+      return np.array(normalized * 255, dtype='uint8')
+
+    Gs_syn_kwargs = {'output_transform': {'func': convert_images_to_uint8,
                                           'nchw_to_nhwc': True},
                     'randomize_noise': False,
                     'minibatch_size': batch_size}
@@ -551,12 +564,16 @@ class LucidSonicDream:
                         .synthesis.run(w_batch, **Gs_syn_kwargs)
         else:
           all_w = self.Gs.mapping(torch.from_numpy(noise_batch).to('cuda:0'), None)
-          all_images = self.Gs.synthesis(all_w, noise_mode='const')
+          image_batch = (self.Gs.synthesis(all_w, noise_mode='const')).cpu().numpy()
 
         # For each image in generated batch: apply effects, resize, and save
         for j, image in enumerate(image_batch):   
+          if self.model_type == 'pytorch':
+            array = np.array(image).transpose((1,2,0))
+            array = convert_images_to_uint8(array)
+          else:
+            array = np.array(image)
 
-          array = np.array(image)
 
           # Apply efects
           for effect in self.custom_effects:
@@ -723,7 +740,13 @@ class LucidSonicDream:
     video = mpy.ImageSequenceClip(self.frames_dir, 
                                   fps=self.sr/self.frame_duration)
     video = video.set_audio(audio)
-    video.write_videofile(file_name,audio_codec='aac')
+    video.write_videofile(file_name,audio_codec='mp3')
+
+    import subprocess
+
+    cmd = 'yes | ffmpeg -i {} -i {} -c:v copy -c:a aac {}'.format('tmp.wav', file_name, file_name + '_with_audio.mp4')
+    subprocess.call(cmd, shell=True)  # "Muxing Done
+    print('Muxing Done')
 
     # Delete temporary audio file
     os.remove('tmp.wav')
@@ -780,18 +803,18 @@ if __name__ == '__main__':
 
   parser.add_argument('--model-type', type=str, default='pytorch', choices=['pytorch', 'tensorflow'], help='what model type to use')
 
-  shaders21k_checkpoint = '/data/vision/torralba/movies_sfm/home/no_training_cnn/contrastive_image_models/image_generation/' \
-                          'stylegan2/shaders-21k-best-gamma/00000-shaders21k_256x256-auto4-gamma5-bgcfnc/network-snapshot-025000.pkl'
+  shaders21k_checkpoint = network_file = 'file:////data/vision/torralba/movies_sfm/home/no_training_cnn/contrastive_image_models/image_generation/stylegan2/shaders-21k-best-gamma/00000-shaders21k_256x256-auto4-gamma5-bgcfnc/network-snapshot-025000.pkl'
 
-  parser.add_argument('--style', type=str, default='checkpoint', help='style to use or checkpoint')
+  parser.add_argument('--style', type=str, default=shaders21k_checkpoint, help='style to use or checkpoint')
 
-  parser.add_argument('--music-file', type='str', default='./image_generation/explore_shader21k_styelgan/audio_sync/polo_and_pan_feel_good.mp3')
-  parser.add_argument('--output-file', type='str', default='./image_generation/explore_shader21k_styelgan/audio_sync/lucid_sonic_dreams_polo_and_pan_feel_good.mp4')
+  parser.add_argument('--music-file', type=str, default='/data/vision/torralba/movies_sfm/home/no_training_cnn/contrastive_image_models/image_generation/explore_shader21k_styelgan/audios/plol_reduced.mp3')
+  parser.add_argument('--output-file', type=str, default='/data/vision/torralba/movies_sfm/home/no_training_cnn/contrastive_image_models/image_generation/explore_shader21k_styelgan/audios/plol_reduced.mp3.mp4')
 
   args = parser.parse_args()
-
 
 
   L = LucidSonicDream(song=args.music_file,
                       style=args.style,
                       model_type=args.model_type)
+
+  L.hallucinate(file_name=args.output_file)
